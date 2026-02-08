@@ -1,0 +1,663 @@
+# Border Watch — Great Lakes
+
+**Border Watch** is a GPS-based Progressive Web App (PWA) that determines whether a vessel or device is located in **Canada or the United States** on the Great Lakes, and alerts the user when an international border crossing is detected.
+
+This tool is intended for **situational awareness only** and does **not** replace official navigation charts, legal reporting requirements, or border authority instructions.
+
+---
+
+## Features
+
+- 📍 Real-time GPS position tracking
+- 🇨🇦🇺🇸 Automatic detection of Canada vs USA waters
+- 🔔 Border crossing alert when side changes
+- 🧪 Built-in simulation mode for testing
+- 🗺️ Map display with optional international boundary line
+- 📱 Installable as a PWA (works offline after first load)
+
+---
+
+## How It Works
+
+1. The app reads your GPS coordinates using the device’s location services.
+2. Your position is compared against official country boundary polygons (GeoJSON).
+3. The app determines whether the position lies in **Canada** or the **USA**.
+4. If the detected country changes, a border crossing alert is triggered.
+
+---
+
+## Installation (Recommended)
+
+1. Open the app in a modern browser (Chrome, Edge, Safari).
+2. Ensure the app is served over **HTTPS** (GitHub Pages recommended).
+3. Allow location permissions when prompted.
+4. (Optional) Use **“Add to Home Screen”** to install the app.
+
+---
+
+## Testing Without GPS Movement
+
+Use the **Test (Simulate)** button to toggle between:
+- Toronto, Canada
+- Cleveland, Ohio, USA
+
+This confirms that:
+- GeoJSON boundary files are loaded correctly
+- Country detection logic is working
+
+---
+
+## Accuracy Notes
+
+- GPS accuracy varies by device, signal quality, and surroundings.
+- Near the international boundary, GPS “jitter” may occur.
+- The app includes accuracy checks to reduce false detections.
+
+For best results:
+- Use in open sky conditions
+- Avoid relying on results when reported accuracy exceeds ~200 m
+
+---
+
+## Files Required
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Border Watch — Great Lakes (v1.1)</title>
+  <meta name="theme-color" content="#0b4a6f" />
+  <link rel="manifest" href="manifest.json" />
+
+  <!-- Leaflet (map) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header { padding: 12px 14px; background:#0b4a6f; color:#fff; }
+    header .title { font-weight: 700; }
+    header .sub { font-size: 12px; opacity: .95; margin-top: 2px; line-height: 1.25; }
+    #wrap { display:grid; grid-template-rows: auto auto auto auto auto 1fr auto; height: 100vh; }
+    #controls { padding: 10px 14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; border-bottom:1px solid #e6e6e6; }
+    button { padding:10px 12px; border:0; border-radius:10px; background:#0b4a6f; color:#fff; font-weight:600; cursor:pointer; }
+    button.secondary { background:#e9eef2; color:#123; }
+    button:disabled { opacity: .55; cursor:not-allowed; }
+    #status { padding: 10px 14px; font-size: 14px; line-height:1.35; }
+    #status .pill { display:inline-block; padding: 2px 10px; border-radius: 999px; background:#eef; margin-left:6px; font-weight:700; }
+    #map { height: 100%; }
+    .small { font-size: 12px; color:#445; }
+    .warn { color:#8a2d2d; font-weight:700; }
+    .ok { color:#1f6b2a; font-weight:700; }
+    code { background:#f4f4f4; padding:1px 6px; border-radius:6px; }
+    footer { padding:8px 14px; font-size:12px; text-align:center; color:#555; border-top:1px solid #e6e6e6; background:#fafafa; }
+    th { position: sticky; top: 0; background: #fff; }
+  </style>
+</head>
+
+<body>
+<div id="wrap">
+  <header>
+    <div class="title">Border Watch — Great Lakes</div>
+    <div class="sub">
+      Uses GPS + boundary polygons to detect Canada ⇄ USA crossings (v1.1)<br>
+      © 2026 Glen Carruthers · Informational use only
+    </div>
+  </header>
+
+  <div id="controls">
+    <button id="btnStart">Start GPS Watch</button>
+    <button id="btnStop" class="secondary" disabled>Stop</button>
+    <button id="btnTest" class="secondary">Test (Simulate)</button>
+    <button id="btnLang" class="secondary">FR</button>
+    <span class="small" id="tipHttps">Tip: must be served over <b>HTTPS</b> for GPS permissions.</span>
+  </div>
+
+  <div id="status">
+    <div><span id="lblPerm">Permission</span>: <span id="perm" class="pill">unknown</span></div>
+    <div><span id="lblGps">GPS</span>: <span id="gps" class="pill">stopped</span></div>
+    <div><span id="lblAcc">Accuracy</span>: <span id="acc" class="pill">—</span></div>
+    <div><span id="lblLatLng">Lat/Lng</span>: <span id="latlng" class="pill">—</span></div>
+    <div><span id="lblSide">Detected side</span>: <span id="side" class="pill">—</span></div>
+    <div id="msg" class="small" style="margin-top:6px;"></div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="settingsPanel" style="padding:10px 14px; border-top:1px solid #e6e6e6; border-bottom:1px solid #e6e6e6;">
+    <b id="settingsTitle">Settings</b>
+
+    <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:8px; align-items:center;">
+      <label style="display:flex; gap:8px; align-items:center;">
+        <input id="setSound" type="checkbox">
+        <span id="lblSound">Sound</span>
+      </label>
+
+      <label style="display:flex; gap:8px; align-items:center;">
+        <input id="setVibe" type="checkbox">
+        <span id="lblVibe">Vibration</span>
+      </label>
+
+      <label style="display:flex; gap:8px; align-items:center;">
+        <input id="setLog" type="checkbox">
+        <span id="lblLog">Log crossings</span>
+      </label>
+    </div>
+
+    <div class="small" id="settingsNote" style="margin-top:6px;">
+      Saved on this device. Sound may require a user tap first (browser policy).
+    </div>
+  </div>
+
+  <!-- LOG PANEL -->
+  <div id="logPanel" style="padding:10px 14px; border-bottom:1px solid #e6e6e6;">
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <b id="logTitle">Crossing Log</b>
+      <button id="btnExport" class="secondary">Export CSV</button>
+      <button id="btnClear" class="secondary">Clear Log</button>
+      <span id="logCount" class="small"></span>
+    </div>
+
+    <div style="overflow:auto; max-height:160px; margin-top:8px;">
+      <table id="logTable" style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead>
+          <tr>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">Time</th>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">From</th>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">To</th>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">Lat</th>
+            <th style="text-align:left; border-bottom:1px solid #ddd; padding:6px;">Lng</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <footer>
+    Border Watch — Great Lakes v1.1 · © 2026 Glen Carruthers · All rights reserved
+  </footer>
+</div>
+
+<script>
+/**
+ * Required GeoJSON files in same folder:
+ *  - usa.geojson    (Polygon/MultiPolygon)
+ *  - canada.geojson (Polygon/MultiPolygon)
+ * Optional:
+ *  - boundary.geojson (LineString/MultiLineString) for display only
+ */
+
+const APP = {
+  watchId: null,
+  lastSide: null,
+  usa: null,
+  can: null,
+  boundary: null,
+  map: null,
+  marker: null,
+  track: null,
+  lang: "EN",
+  log: [],
+  settings: { sound: true, vibration: true, log: true }
+};
+
+// ---------- I18N ----------
+const I18N = {
+  EN: {
+    start: "Start GPS Watch",
+    stop: "Stop",
+    test: "Test (Simulate)",
+    perm: "Permission",
+    gps: "GPS",
+    acc: "Accuracy",
+    latlng: "Lat/Lng",
+    side: "Detected side",
+    last: "Last confirmed side",
+    crossing: "Border crossing detected",
+    logTitle: "Crossing Log",
+    export: "Export CSV",
+    clear: "Clear Log",
+    settings: "Settings",
+    sound: "Sound",
+    vibration: "Vibration",
+    logCrossings: "Log crossings",
+    settingsNote: "Saved on this device. Sound may require a user tap first (browser policy).",
+    httpsTip: "Tip: must be served over HTTPS for GPS permissions.",
+    missing: "Missing GeoJSON files.",
+    missing2: "Put <code>usa.geojson</code> and <code>canada.geojson</code> beside <code>index.html</code>. (Optional) add <code>boundary.geojson</code> for display.",
+    geoNotSupported: "Geolocation not supported",
+    poorAcc: "Accuracy is very poor — move to open sky."
+  },
+  FR: {
+    start: "Démarrer GPS",
+    stop: "Arrêter",
+    test: "Test (Simuler)",
+    perm: "Autorisation",
+    gps: "GPS",
+    acc: "Précision",
+    latlng: "Lat/Lng",
+    side: "Pays détecté",
+    last: "Dernier pays confirmé",
+    crossing: "Franchissement détecté",
+    logTitle: "Journal de franchissement",
+    export: "Exporter CSV",
+    clear: "Effacer le journal",
+    settings: "Paramètres",
+    sound: "Son",
+    vibration: "Vibration",
+    logCrossings: "Journaliser les franchissements",
+    settingsNote: "Enregistré sur cet appareil. Le son peut exiger un appui (politique du navigateur).",
+    httpsTip: "Astuce : l’application doit être servie en HTTPS pour autoriser le GPS.",
+    missing: "Fichiers GeoJSON manquants.",
+    missing2: "Placez <code>usa.geojson</code> et <code>canada.geojson</code> à côté de <code>index.html</code>. (Optionnel) ajoutez <code>boundary.geojson</code> pour l’affichage.",
+    geoNotSupported: "Géolocalisation non prise en charge",
+    poorAcc: "Précision très faible — allez à ciel ouvert."
+  }
+};
+
+function t(key){ return (I18N[APP.lang] && I18N[APP.lang][key]) || key; }
+
+function applyLang(){
+  document.getElementById("btnStart").textContent = t("start");
+  document.getElementById("btnStop").textContent  = t("stop");
+  document.getElementById("btnTest").textContent  = t("test");
+  document.getElementById("btnLang").textContent  = (APP.lang === "EN") ? "FR" : "EN";
+
+  document.getElementById("lblPerm").textContent = t("perm");
+  document.getElementById("lblGps").textContent = t("gps");
+  document.getElementById("lblAcc").textContent = t("acc");
+  document.getElementById("lblLatLng").textContent = t("latlng");
+  document.getElementById("lblSide").textContent = t("side");
+
+  document.getElementById("logTitle").textContent = t("logTitle");
+  document.getElementById("btnExport").textContent = t("export");
+  document.getElementById("btnClear").textContent = t("clear");
+
+  document.getElementById("settingsTitle").textContent = t("settings");
+  document.getElementById("lblSound").textContent = t("sound");
+  document.getElementById("lblVibe").textContent  = t("vibration");
+  document.getElementById("lblLog").textContent   = t("logCrossings");
+  document.getElementById("settingsNote").textContent = t("settingsNote");
+
+  // tip line contains <b>, so set HTML
+  document.getElementById("tipHttps").innerHTML = t("httpsTip").replace("HTTPS", "<b>HTTPS</b>");
+}
+
+// ---------- UI helpers ----------
+const el = id => document.getElementById(id);
+
+function setPill(id, text, cls=null) {
+  const p = el(id);
+  p.textContent = text;
+  p.style.background = cls === "ok" ? "#e7f7ea" : cls === "warn" ? "#fdeaea" : "#eef";
+  p.style.color = cls === "ok" ? "#1f6b2a" : cls === "warn" ? "#8a2d2d" : "#123";
+}
+
+function setMsg(html) { el("msg").innerHTML = html; }
+
+// ---------- Settings ----------
+function loadSettings(){
+  try {
+    const s = localStorage.getItem("bw_settings");
+    if (s) APP.settings = { ...APP.settings, ...JSON.parse(s) };
+  } catch {}
+}
+
+function saveSettings(){
+  try { localStorage.setItem("bw_settings", JSON.stringify(APP.settings)); } catch {}
+}
+
+function applySettingsToUI(){
+  const s = APP.settings;
+  el("setSound").checked = !!s.sound;
+  el("setVibe").checked  = !!s.vibration;
+  el("setLog").checked   = !!s.log;
+
+  const lp = el("logPanel");
+  if (lp) lp.style.display = s.log ? "" : "none";
+}
+
+// ---------- Beep + Vibration ----------
+function beep(){
+  try{
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC) return;
+    const ctx = new AC();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "sine";
+    o.frequency.value = 880;
+    g.gain.value = 0.05;
+    o.connect(g); g.connect(ctx.destination);
+    o.start();
+    setTimeout(() => { o.stop(); ctx.close(); }, 200);
+  } catch {}
+}
+
+function vibrate(){
+  if (navigator.vibrate) navigator.vibrate([200, 120, 200]);
+}
+
+// ---------- Crossing Log ----------
+function formatLocalISO(d){
+  const pad = n => String(n).padStart(2,"0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function renderLog(){
+  const tbody = document.querySelector("#logTable tbody");
+  tbody.innerHTML = "";
+  for(const row of APP.log.slice().reverse()){
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td style="padding:6px; border-bottom:1px solid #f0f0f0;">${row.time}</td>
+      <td style="padding:6px; border-bottom:1px solid #f0f0f0;">${row.from}</td>
+      <td style="padding:6px; border-bottom:1px solid #f0f0f0;">${row.to}</td>
+      <td style="padding:6px; border-bottom:1px solid #f0f0f0;">${row.lat.toFixed(6)}</td>
+      <td style="padding:6px; border-bottom:1px solid #f0f0f0;">${row.lng.toFixed(6)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+  el("logCount").textContent = `${APP.log.length} event(s)`;
+}
+
+function addLogEntry(from, to, lat, lng){
+  APP.log.push({
+    time: formatLocalISO(new Date()),
+    from, to, lat, lng
+  });
+  try { localStorage.setItem("bw_log", JSON.stringify(APP.log)); } catch {}
+  renderLog();
+}
+
+function loadLog(){
+  try {
+    const s = localStorage.getItem("bw_log");
+    if (s) APP.log = JSON.parse(s) || [];
+  } catch { APP.log = []; }
+  renderLog();
+}
+
+function exportCSV(){
+  const header = ["time","from","to","lat","lng"];
+  const lines = [header.join(",")].concat(
+    APP.log.map(r => [
+      `"${r.time}"`,
+      r.from,
+      r.to,
+      r.lat.toFixed(6),
+      r.lng.toFixed(6)
+    ].join(","))
+  );
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `borderwatch-crossings-${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// ---------- Point in Polygon (ray casting) ----------
+function pointInRing(pt, ring) {
+  const x = pt[0], y = pt[1];
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    const intersect = ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-15) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInPolygonGeoJSON(ptLngLat, geojson) {
+  if (!geojson) return false;
+  const g = geojson.type === "FeatureCollection" ? geojson.features : [geojson];
+  for (const feat of g) {
+    const geom = feat.type === "Feature" ? feat.geometry : (feat.geometry ? feat.geometry : feat);
+    if (!geom) continue;
+
+    if (geom.type === "Polygon") {
+      const [outer, ...holes] = geom.coordinates;
+      if (pointInRing(ptLngLat, outer)) {
+        let inHole = false;
+        for (const h of holes) if (pointInRing(ptLngLat, h)) { inHole = true; break; }
+        if (!inHole) return true;
+      }
+    }
+
+    if (geom.type === "MultiPolygon") {
+      for (const poly of geom.coordinates) {
+        const [outer, ...holes] = poly;
+        if (pointInRing(ptLngLat, outer)) {
+          let inHole = false;
+          for (const h of holes) if (pointInRing(ptLngLat, h)) { inHole = true; break; }
+          if (!inHole) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// ---------- Side detection ----------
+function detectSide(lat, lng) {
+  const pt = [lng, lat];
+  const inUSA = pointInPolygonGeoJSON(pt, APP.usa);
+  const inCAN = pointInPolygonGeoJSON(pt, APP.can);
+
+  if (inUSA && !inCAN) return "USA";
+  if (inCAN && !inUSA) return "CANADA";
+  if (inUSA && inCAN) return "OVERLAP (bad data)";
+  return "UNKNOWN";
+}
+
+// ---------- Map ----------
+function initMap() {
+  APP.map = L.map("map", { zoomControl: true }).setView([44.9, -83.5], 6);
+
+  // OSM tiles (internet needed)
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: "© OpenStreetMap contributors"
+  }).addTo(APP.map);
+
+  APP.track = L.polyline([], { weight: 3 }).addTo(APP.map);
+  APP.marker = L.circleMarker([0,0], { radius: 8, weight: 2 }).addTo(APP.map);
+
+  // Display polygons (can be a bit heavy, but OK when clipped)
+  if (APP.usa) L.geoJSON(APP.usa, { style: { weight: 1, fillOpacity: 0.05 } }).addTo(APP.map);
+  if (APP.can) L.geoJSON(APP.can, { style: { weight: 1, fillOpacity: 0.05 } }).addTo(APP.map);
+  if (APP.boundary) L.geoJSON(APP.boundary, { style: { weight: 3 } }).addTo(APP.map);
+}
+
+function updateMap(lat, lng) {
+  if (!APP.map) return;
+  APP.marker.setLatLng([lat, lng]);
+  APP.track.addLatLng([lat, lng]);
+}
+
+// ---------- GPS ----------
+async function ensurePermission() {
+  if (!navigator.permissions) {
+    setPill("perm", "unknown", null);
+    return;
+  }
+  try {
+    const st = await navigator.permissions.query({ name: "geolocation" });
+    setPill("perm", st.state, st.state === "granted" ? "ok" : st.state === "denied" ? "warn" : null);
+    st.onchange = () => setPill("perm", st.state, st.state === "granted" ? "ok" : st.state === "denied" ? "warn" : null);
+  } catch {
+    setPill("perm", "unknown", null);
+  }
+}
+
+function startWatch() {
+  if (!navigator.geolocation) {
+    setMsg(`<span class="warn">${t("geoNotSupported")}</span>`);
+    return;
+  }
+
+  const MIN_GOOD_ACCURACY_M = 80;
+
+  setPill("gps", "starting…", null);
+
+  APP.watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const { latitude, longitude, accuracy } = pos.coords;
+
+      setPill("gps", "watching", "ok");
+      setPill("acc", `${Math.round(accuracy)} m`, accuracy <= MIN_GOOD_ACCURACY_M ? "ok" : "warn");
+      setPill("latlng", `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+
+      if (accuracy > 250) {
+        setMsg(`<span class="warn">${t("poorAcc")}</span>`);
+        updateMap(latitude, longitude);
+        return;
+      }
+
+      const side = detectSide(latitude, longitude);
+      setPill("side", side, side === "USA" || side === "CANADA" ? "ok" : "warn");
+
+      // Crossing event
+      if (APP.lastSide && side !== APP.lastSide && (side === "USA" || side === "CANADA")) {
+        if (APP.settings.sound) beep();
+        if (APP.settings.vibration) vibrate();
+
+        alert(`${t("crossing")}: ${APP.lastSide} → ${side}`);
+
+        if (APP.settings.log) addLogEntry(APP.lastSide, side, latitude, longitude);
+      }
+
+      if (side === "USA" || side === "CANADA") APP.lastSide = side;
+
+      setMsg(`${t("last")}: <b>${APP.lastSide ?? "—"}</b>`);
+      updateMap(latitude, longitude);
+    },
+    (err) => {
+      setPill("gps", "error", "warn");
+      setMsg(`<span class="warn">GPS error:</span> ${err.message}`);
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 2000,
+      timeout: 15000
+    }
+  );
+
+  el("btnStart").disabled = true;
+  el("btnStop").disabled = false;
+}
+
+function stopWatch() {
+  if (APP.watchId != null) navigator.geolocation.clearWatch(APP.watchId);
+  APP.watchId = null;
+  setPill("gps", "stopped", null);
+  el("btnStart").disabled = false;
+  el("btnStop").disabled = true;
+}
+
+// ---------- Load GeoJSON files ----------
+async function loadJSON(name) {
+  const r = await fetch(name, { cache: "no-store" });
+  if (!r.ok) throw new Error(`Missing ${name} (HTTP ${r.status})`);
+  return await r.json();
+}
+
+async function boot() {
+  await ensurePermission();
+
+  // Load required polygons
+  try {
+    APP.usa = await loadJSON("usa.geojson");
+    APP.can = await loadJSON("canada.geojson");
+  } catch (e) {
+    setMsg(`
+      <span class="warn">${t("missing")}</span><br>
+      ${t("missing2")}
+    `);
+  }
+
+  // Optional boundary line for map display
+  try { APP.boundary = await loadJSON("boundary.geojson"); } catch {}
+
+  // PWA service worker
+  if ("serviceWorker" in navigator) {
+    try { await navigator.serviceWorker.register("./service-worker.js"); } catch {}
+  }
+
+  loadSettings();
+  applySettingsToUI();
+
+  loadLog(); // log panel will hide if setting is off
+
+  initMap();
+
+  // Language
+  applyLang();
+}
+
+// ---------- Events ----------
+el("btnStart").addEventListener("click", startWatch);
+el("btnStop").addEventListener("click", stopWatch);
+
+el("btnLang").addEventListener("click", () => {
+  APP.lang = (APP.lang === "EN") ? "FR" : "EN";
+  applyLang();
+});
+
+el("btnTest").addEventListener("click", () => {
+  // Unambiguous samples:
+  const samples = [
+    { lat: 43.6532, lng: -79.3832, label: "Toronto (CAN)" },
+    { lat: 41.4993, lng: -81.6944, label: "Cleveland, Ohio (USA)" }
+  ];
+  const pick = samples[Math.floor(Math.random() * samples.length)];
+  const side = detectSide(pick.lat, pick.lng);
+
+  setPill("latlng", `${pick.lat.toFixed(6)}, ${pick.lng.toFixed(6)}`);
+  setPill("side", side, side === "USA" || side === "CANADA" ? "ok" : "warn");
+  setMsg(`Simulated: <b>${pick.label}</b> · ${t("last")}: <b>${APP.lastSide ?? "—"}</b>`);
+
+  // put marker on map for the test point
+  updateMap(pick.lat, pick.lng);
+  if (APP.map) APP.map.setView([pick.lat, pick.lng], Math.max(APP.map.getZoom(), 7));
+});
+
+el("btnExport").addEventListener("click", exportCSV);
+
+el("btnClear").addEventListener("click", () => {
+  APP.log = [];
+  try { localStorage.removeItem("bw_log"); } catch {}
+  renderLog();
+});
+
+// Settings toggles
+el("setSound").addEventListener("change", (e) => {
+  APP.settings.sound = e.target.checked;
+  saveSettings();
+});
+
+el("setVibe").addEventListener("change", (e) => {
+  APP.settings.vibration = e.target.checked;
+  saveSettings();
+});
+
+el("setLog").addEventListener("change", (e) => {
+  APP.settings.log = e.target.checked;
+  saveSettings();
+  applySettingsToUI();
+});
+
+// Start
+boot();
+</script>
+</body>
+</html>
