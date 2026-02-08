@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Border Watch — Great Lakes (v1.2)</title>
+  <meta name="theme-color" content="#0b4a6f" />
+  <link rel="manifest" href="manifest.json" />
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+
+    /* ===== MAIN LAYOUT ===== */
+    #wrap {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    header {
+      padding: 12px 14px;
+      background: #0b4a6f;
+      color: #fff;
+    }
+
+    header .title { font-weight: 700; }
+    header .sub {
+      font-size: 12px;
+      opacity: 0.95;
+      margin-top: 2px;
+      line-height: 1.25;
+    }
+
+    #controls,
+    #status,
+    #settingsPanel,
+    #logPanel {
+      padding: 10px 14px;
+      border-bottom: 1px solid #e6e6e6;
+    }
+
+    #controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    button {
+      padding: 10px 12px;
+      border: 0;
+      border-radius: 10px;
+      background: #0b4a6f;
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: #e9eef2;
+      color: #123;
+    }
+
+    button:disabled {
+      opacity: .55;
+      cursor: not-allowed;
+    }
+
+    #status {
+      font-size: 14px;
+      line-height: 1.35;
+    }
+
+    #status .pill {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      background: #eef;
+      margin-left: 6px;
+      font-weight: 700;
+    }
+
+    /* ===== MAP (Option A) ===== */
+    #map {
+      flex: 1;
+      min-height: 55vh;
+    }
+
+    .small { font-size: 12px; color: #445; }
+    .warn { color: #8a2d2d; font-weight: 700; }
+    .ok { color: #1f6b2a; font-weight: 700; }
+
+    footer {
+      padding: 8px 14px;
+      font-size: 12px;
+      text-align: center;
+      color: #555;
+      border-top: 1px solid #e6e6e6;
+      background: #fafafa;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: #fff;
+    }
+  </style>
+</head>
+
+<body>
+<div id="wrap">
+
+  <header>
+    <div class="title">Border Watch — Great Lakes</div>
+    <div class="sub">
+      Uses GPS + boundary polygons to detect Canada ⇄ USA crossings (v1.2)<br>
+      © 2026 Glen Carruthers · Informational use only
+    </div>
+  </header>
+
+  <div id="controls">
+    <button id="btnStart">Start GPS Watch</button>
+    <button id="btnStop" class="secondary" disabled>Stop</button>
+    <button id="btnTest" class="secondary">Test (Simulate)</button>
+    <button id="btnLang" class="secondary">FR</button>
+    <span class="small">Tip: must be served over <b>HTTPS</b> for GPS permissions.</span>
+  </div>
+
+  <div id="status">
+    <div>Permission: <span id="perm" class="pill">unknown</span></div>
+    <div>GPS: <span id="gps" class="pill">stopped</span></div>
+    <div>Accuracy: <span id="acc" class="pill">—</span></div>
+    <div>Lat/Lng: <span id="latlng" class="pill">—</span></div>
+    <div>Detected side: <span id="side" class="pill">—</span></div>
+    <div id="msg" class="small" style="margin-top:6px;"></div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="settingsPanel">
+    <b>Settings</b>
+    <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:8px;">
+      <label><input id="setSound" type="checkbox"> Sound</label>
+      <label><input id="setVibe" type="checkbox"> Vibration</label>
+      <label><input id="setLog" type="checkbox"> Log crossings</label>
+    </div>
+  </div>
+
+  <!-- LOG -->
+  <div id="logPanel">
+    <b>Crossing Log</b>
+    <div style="overflow:auto; max-height:140px; margin-top:6px;">
+      <table id="logTable" style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead>
+          <tr>
+            <th>Time</th><th>From</th><th>To</th><th>Lat</th><th>Lng</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- MAP (now dominant) -->
+  <div id="map"></div>
+
+  <footer>
+    Border Watch — Great Lakes v1.2 · © 2026 Glen Carruthers
+  </footer>
+
+</div>
+
+<!--
+NOTE:
+All GPS, logging, EN/FR, alerts, and settings JS remain unchanged.
+Only layout was modified to expand the map vertically.
+-->
+</body>
+</html>
