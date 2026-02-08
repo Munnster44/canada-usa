@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Border Watch — Great Lakes (v1.0)</title>
+  <meta name="theme-color" content="#0b4a6f" />
+  <link rel="manifest" href="manifest.json" />
+
+  <!-- Leaflet (map) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header { padding: 12px 14px; background:#0b4a6f; color:#fff; }
+    header .title { font-weight: 700; }
+    header .sub { font-size: 12px; opacity: .9; margin-top: 2px; }
+    #wrap { display:grid; grid-template-rows: auto auto 1fr; height: 100vh; }
+    #controls { padding: 10px 14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; border-bottom:1px solid #e6e6e6; }
+    button { padding:10px 12px; border:0; border-radius:10px; background:#0b4a6f; color:#fff; font-weight:600; }
+    button.secondary { background:#e9eef2; color:#123; }
+    #status { padding: 10px 14px; font-size: 14px; line-height:1.35; }
+    #status .pill { display:inline-block; padding: 2px 10px; border-radius: 999px; background:#eef; margin-left:6px; font-weight:700; }
+    #map { height: 100%; }
+    .small { font-size: 12px; color:#445; }
+    .warn { color:#8a2d2d; font-weight:700; }
+    .ok { color:#1f6b2a; font-weight:700; }
+    code { background:#f4f4f4; padding:1px 6px; border-radius:6px; }
+  </style>
+</head>
+
+<body>
+<div id="wrap">
+  <header>
+    <div class="title">Border Watch — Great Lakes</div>
+    <div class="sub">Uses GPS + GeoJSON polygons to detect Canada ⇄ USA crossings (v1.0)</div>
+  </header>
+
+  <div id="controls">
+    <button id="btnStart">Start GPS Watch</button>
+    <button id="btnStop" class="secondary" disabled>Stop</button>
+    <button id="btnTest" class="secondary">Test (Simulate)</button>
+    <span class="small">Tip: must be served over <b>HTTPS</b> for GPS permissions.</span>
+  </div>
+
+  <div id="status">
+    <div>Permission: <span id="perm" class="pill">unknown</span></div>
+    <div>GPS: <span id="gps" class="pill">stopped</span></div>
+    <div>Accuracy: <span id="acc" class="pill">—</span></div>
+    <div>Lat/Lng: <span id="latlng" class="pill">—</span></div>
+    <div>Detected side: <span id="side" class="pill">—</span></div>
+    <div id="msg" class="small" style="margin-top:6px;"></div>
+  </div>
+
+  <div id="map"></div>
+</div>
+
+<script>
+/**
+ * You must provide TWO GeoJSON files in the same folder:
+ *  - usa.geojson    (Polygon/MultiPolygon)
+ *  - canada.geojson (Polygon/MultiPolygon)
+ * Optional:
+ *  - boundary.geojson (LineString/MultiLineString) for display only
+ *
+ * Keep them small by clipping to the Great Lakes region.
+ */
+
+const APP = {
+  watchId: null,
+  lastSide: null,
+  usa: null,
+  can: null,
+  boundary: null,
+  map: null,
+  marker: null,
+  track: null
+};
+
+// ---------- UI helpers ----------
+const el = id => document.getElementById(id);
+function setPill(id, text, cls=null) {
+  const p = el(id);
+  p.textContent = text;
+  p.style.background = cls === "ok" ? "#e7f7ea" : cls === "warn" ? "#fdeaea" : "#eef";
+  p.style.color = cls === "ok" ? "#1f6b2a" : cls === "warn" ? "#8a2d2d" : "#123";
+}
+function setMsg(html) { el("msg").innerHTML = html; }
+
+// ---------- Point in Polygon (ray casting) ----------
+function pointInRing(pt, ring) {
+  // pt: [lng, lat], ring: [[lng,lat], ...]
+  const x = pt[0], y = pt[1];
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    const intersect = ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-15) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInPolygonGeoJSON(ptLngLat, geojson) {
+  if (!geojson) return false;
+  const g = geojson.type === "FeatureCollection" ? geojson.features : [geojson];
+  for (const feat of g) {
+    const geom = feat.type === "Feature" ? feat.geometry : feat.geometry ? feat.geometry : feat;
+    if (!geom) continue;
+
+    if (geom.type === "Polygon") {
+      const [outer, ...holes] = geom.coordinates;
+      if (pointInRing(ptLngLat, outer)) {
+        let inHole = false;
+        for (const h of holes) if (pointInRing(ptLngLat, h)) { inHole = true; break; }
+        if (!inHole) return true;
+      }
+    }
+
+    if (geom.type === "MultiPolygon") {
+      for (const poly of geom.coordinates) {
+        const [outer, ...holes] = poly;
+        if (pointInRing(ptLngLat, outer)) {
+          let inHole = false;
+          for (const h of holes) if (pointInRing(ptLngLat, h)) { inHole = true; break; }
+          if (!inHole) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// ---------- Side detection ----------
+function detectSide(lat, lng) {
+  const pt = [lng, lat];
+  const inUSA = pointInPolygonGeoJSON(pt, APP.usa);
+  const inCAN = pointInPolygonGeoJSON(pt, APP.can);
+
+  if (inUSA && !inCAN) return "USA";
+  if (inCAN && !inUSA) return "CANADA";
+  if (inUSA && inCAN) return "OVERLAP (bad data)";
+  return "UNKNOWN (outside polygons)";
+}
+
+// ---------- Map ----------
+function initMap() {
+  APP.map = L.map("map", { zoomControl: true }).setView([44.9, -83.5], 6);
+
+  // OSM tiles (needs internet; you can replace with offline tiles later)
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: "© OpenStreetMap contributors"
+  }).addTo(APP.map);
+
+  APP.track = L.polyline([], { weight: 3 }).addTo(APP.map);
+  APP.marker = L.circleMarker([0,0], { radius: 8, weight: 2 }).addTo(APP.map);
+
+  // Display polygons if you want (can be heavy)
+  if (APP.usa) L.geoJSON(APP.usa, { style: { weight: 1, fillOpacity: 0.05 } }).addTo(APP.map);
+  if (APP.can) L.geoJSON(APP.can, { style: { weight: 1, fillOpacity: 0.05 } }).addTo(APP.map);
+  if (APP.boundary) L.geoJSON(APP.boundary, { style: { weight: 3 } }).addTo(APP.map);
+}
+
+function updateMap(lat, lng) {
+  if (!APP.map) return;
+  APP.marker.setLatLng([lat, lng]);
+  APP.track.addLatLng([lat, lng]);
+}
+
+// ---------- GPS ----------
+async function ensurePermission() {
+  if (!navigator.permissions) {
+    setPill("perm", "unknown", null);
+    return;
+  }
+  try {
+    const st = await navigator.permissions.query({ name: "geolocation" });
+    setPill("perm", st.state, st.state === "granted" ? "ok" : st.state === "denied" ? "warn" : null);
+    st.onchange = () => setPill("perm", st.state, st.state === "granted" ? "ok" : st.state === "denied" ? "warn" : null);
+  } catch {
+    setPill("perm", "unknown", null);
+  }
+}
+
+function startWatch() {
+  if (!navigator.geolocation) {
+    setMsg(`<span class="warn">Geolocation not supported</span>`);
+    return;
+  }
+
+  // Recommended: avoid false crossings from jitter by requiring decent accuracy
+  const MIN_GOOD_ACCURACY_M = 80; // adjust (50–150m typical)
+
+  setPill("gps", "starting…", null);
+
+  APP.watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const { latitude, longitude, accuracy } = pos.coords;
+
+      setPill("gps", "watching", "ok");
+      setPill("acc", `${Math.round(accuracy)} m`, accuracy <= MIN_GOOD_ACCURACY_M ? "ok" : "warn");
+      setPill("latlng", `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+
+      // If accuracy is poor, you can choose to not change state:
+      if (accuracy > 250) {
+        setMsg(`<span class="warn">Accuracy is very poor — move to open sky.</span>`);
+        updateMap(latitude, longitude);
+        return;
+      }
+
+      const side = detectSide(latitude, longitude);
+      setPill("side", side, side === "USA" || side === "CANADA" ? "ok" : "warn");
+
+      // Crossing event
+      if (APP.lastSide && side !== APP.lastSide && (side === "USA" || side === "CANADA")) {
+        alert(`Border crossing detected: ${APP.lastSide} → ${side}`);
+      }
+      if (side === "USA" || side === "CANADA") APP.lastSide = side;
+
+      setMsg(`Last confirmed side: <b>${APP.lastSide ?? "—"}</b>`);
+      updateMap(latitude, longitude);
+    },
+    (err) => {
+      setPill("gps", "error", "warn");
+      setMsg(`<span class="warn">GPS error:</span> ${err.message}`);
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 2000,
+      timeout: 15000
+    }
+  );
+
+  el("btnStart").disabled = true;
+  el("btnStop").disabled = false;
+}
+
+function stopWatch() {
+  if (APP.watchId != null) navigator.geolocation.clearWatch(APP.watchId);
+  APP.watchId = null;
+  setPill("gps", "stopped", null);
+  el("btnStart").disabled = false;
+  el("btnStop").disabled = true;
+}
+
+// ---------- Load GeoJSON files ----------
+async function loadJSON(name) {
+  const r = await fetch(name, { cache: "no-store" });
+  if (!r.ok) throw new Error(`Missing ${name} (HTTP ${r.status})`);
+  return await r.json();
+}
+
+async function boot() {
+  await ensurePermission();
+
+  // Load required polygons
+  try {
+    APP.usa = await loadJSON("usa.geojson");
+    APP.can = await loadJSON("canada.geojson");
+  } catch (e) {
+    setMsg(`
+      <span class="warn">Missing GeoJSON files.</span><br>
+      Put <code>usa.geojson</code> and <code>canada.geojson</code> beside <code>index.html</code>.<br>
+      (Optional) add <code>boundary.geojson</code> for display.
+    `);
+  }
+
+  // Optional boundary line for map display
+  try { APP.boundary = await loadJSON("boundary.geojson"); } catch {}
+
+  initMap();
+
+  // Register service worker (PWA)
+  if ("serviceWorker" in navigator) {
+    try { await navigator.serviceWorker.register("./service-worker.js"); } catch {}
+  }
+}
+
+el("btnStart").addEventListener("click", startWatch);
+el("btnStop").addEventListener("click", stopWatch);
+el("btnTest").addEventListener("click", () => {
+  // Two sample points near the border (just to see the UI flip)
+const samples = [
+  { lat: 43.6532, lng: -79.3832, label: "Toronto (CAN)" },
+  { lat: 41.4993, lng: -81.6944, label: "Cleveland, Ohio (USA)" }
+];
+  const pick = samples[Math.floor(Math.random() * samples.length)];
+  const side = detectSide(pick.lat, pick.lng);
+  setPill("latlng", `${pick.lat.toFixed(6)}, ${pick.lng.toFixed(6)}`);
+  setPill("side", side, side === "USA" || side === "CANADA" ? "ok" : "warn");
+  setMsg(`Simulated: <b>${pick.label}</b>`);
+});
+
+boot();
+</script>
+</body>
+</html>
